@@ -243,9 +243,20 @@ La répartition des tâches permet à chacun d'avancer sur son périmètre, tout
 
 Nous utiliserons GitHub pour centraliser les fichiers et suivre les modifications.
 
-Loïc a proposé une organisation par étapes du projet, avec des dossiers consacrés à l'exploration, à la préparation des données, à la classification, à l'analyse des thèmes, à l'évaluation et à la restitution.
+Loïc avait initialement proposé une organisation par étapes du projet, avec des dossiers consacrés aux différentes analyses. Cette première proposition a ensuite été remplacée par une nouvelle arborescence proposée par Dina, permettant de mieux organiser les fichiers selon leur fonction.
 
-Cette structure pourra être ajustée au fur et à mesure du développement, notamment pour séparer les notebooks du code réutilisable.
+La nouvelle organisation prévoit notamment les dossiers suivants :
+
+- **`configs/`** pour les paramètres de configuration et de nettoyage.
+- **`data/`** pour les données brutes et préparées.
+- **`notebooks/`** pour les notebooks d'exploration et d'analyse.
+- **`src/`** pour les scripts et fonctions réutilisables.
+- **`results/`** pour les résultats, graphiques et tableaux.
+- **`app/`** pour le tableau de bord interactif.
+- **`docs/`** pour les documents et livrables du projet.
+- **`tests/`** pour vérifier le fonctionnement du code.
+
+Cette structure constitue l'organisation cible du dépôt. Les dossiers seront créés progressivement selon les besoins du projet.
 
 Les développements seront réalisés sur des branches dédiées, puis relus avant leur intégration.
 
@@ -253,7 +264,7 @@ Nous utiliserons également :
 
 - **Jira** pour suivre les tâches et les responsabilités.
 - **`CONTRIBUTIONS.md`** pour documenter le travail réalisé par chaque membre.
-- **`results/experiences.csv`** pour conserver une trace des expériences et des résultats.
+- **`results/experiments.csv`** pour conserver une trace des expériences et des résultats.
 
 Un point de synchronisation hebdomadaire permettra de partager notre avancement et de coordonner les étapes communes.
 
