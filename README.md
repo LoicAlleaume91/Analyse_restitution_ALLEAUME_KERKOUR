@@ -252,7 +252,7 @@ La nouvelle organisation prévoit notamment les dossiers suivants :
 - **`notebooks/`** pour les notebooks d'exploration et d'analyse.
 - **`src/`** pour les scripts et fonctions réutilisables.
 - **`results/`** pour les résultats, graphiques et tableaux.
-- **`app/`** pour le tableau de bord interactif.
+- **`dashboard/`** pour le tableau de bord interactif.
 - **`docs/`** pour les documents et livrables du projet.
 - **`tests/`** pour vérifier le fonctionnement du code.
 
