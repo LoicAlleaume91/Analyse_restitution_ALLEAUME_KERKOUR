@@ -1,0 +1,449 @@
+---
+title: "Exploration données McDonald_s_Reviews"
+author: "Loïc ALLEAUME et Dina Kerkour"
+date: "2026-11-11"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 5
+    number_sections: false
+---
+
+## Import des données 
+
+```{r}
+McDonald_s_Reviews <- read.csv("C:/Data/Loic/Mon Bureau/Master/M1/S1/Analyse_restitution/McDonald_s_Reviews.csv", comment.char="#")
+
+```
+
+Données importées à l'aide de l'option "Import Dataset" de R
+
+## Chargement des librairies 
+
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(scales)
+```
+
+## Structure du jeu de données
+
+```{r}
+# Dimensions : nombre de lignes et de colonnes
+dim(McDonald_s_Reviews)
+
+```
+
+Le jeu de données a 33 369 observations et 10 variables.
+
+```{r}
+# Noms des variables
+names(McDonald_s_Reviews)
+```
+
+Le jeu de données comporte les 10 variables suivantes :
+
+-   **`reviewer_id`** : identifiant du client ayant laissé l'avis.
+
+-   **`store_name`** : nom du restaurant.
+
+-   **`category`** : catégorie de l'établissement.
+
+-   **`store_address`** : adresse du restaurant.
+
+-   **`latitude`** : latitude de l'établissement.
+
+-   **`longitude`** : longitude de l'établissement.
+
+-   **`rating_count`** : nombre d'évaluations associé à l'établissement.
+
+-   **`review_time`** : ancienneté relative de l'avis.
+
+-   **`review`** : commentaire rédigé par le client.
+
+-   **`rating`** : note attribuée par le client.
+
+```{r}
+# Types des variables
+str(McDonald_s_Reviews)
+```
+
+Le jeu de données contient une variable entière (reviewer_id), deux variables numériques (latitude. et longitude) et sept variables de type caractère. Certaines variables, notamment rating, rating_count et review_time, sont enregistrées sous forme de texte alors qu'elles représentent des informations numériques ou temporelles. Des conversions pourront donc être nécessaires pour les analyses suivantes.
+
+## Qualité des données 
+
+### Valeurs manquantes 
+
+```{r}
+# Nombre de valeurs manquantes ou vides par variable
+donnees_na <- data.frame(
+  variable = names(McDonald_s_Reviews),
+  effectif = sapply(McDonald_s_Reviews, function(x) {
+    sum(is.na(x) | (is.character(x) & trimws(as.character(x)) == ""))
+  })
+) %>%
+  mutate(
+    pourcentage = effectif / nrow(McDonald_s_Reviews) * 100
+  )
+
+# Affichage des effectifs et pourcentages
+donnees_na
+
+
+```
+
+```{r}
+# Graphique : proportion de valeurs manquantes ou vides par variable
+ggplot(donnees_na,
+       aes(x = reorder(variable, pourcentage), y = pourcentage)) +
+  geom_col(fill = "indianred") +
+  geom_text(
+    aes(label = paste0(
+      round(pourcentage, 2), " % (", effectif, ")"
+    )),
+    hjust = -0.1,
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.25))
+  ) +
+  labs(
+    title = "Proportion de valeurs manquantes ou vides par variable",
+    x = "Variable",
+    y = "Valeurs manquantes ou vides (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Le jeu de données présente relativement peu de valeurs manquantes ou vides. Les variables latitude et longitude sont les plus concernées, avec chacune 660 valeurs manquantes (1,98 %). La variable rating contient également 50 valeurs vides (0,15 %), tandis que la variable review en compte seulement 5 (0,01 %). Les autres variables ne présentent aucune valeur manquante ou vide. Dans l'ensemble, la qualité des données semble donc satisfaisante sur ce point, même si ces valeurs devront être prises en compte lors de la préparation des données.
+
+```{r}
+# Graphique : répartition globale des valeurs présentes et manquantes ou vides
+
+# Identification des valeurs manquantes ou vides
+valeurs_manquantes <- sapply(McDonald_s_Reviews, function(x) {
+  is.na(x) | (is.character(x) & trimws(as.character(x)) == "")
+})
+
+# Calcul des effectifs et proportions
+repartition_na <- data.frame(
+  statut = c("Valeurs présentes", "Valeurs manquantes ou vides"),
+  effectif = c(
+    sum(!valeurs_manquantes),
+    sum(valeurs_manquantes)
+  )
+) %>%
+  mutate(proportion = effectif / sum(effectif))
+
+# Graphique
+ggplot(repartition_na, aes(x = statut, y = proportion, fill = statut)) +
+  geom_col(width = 0.6) +
+  geom_text(
+    aes(label = paste0(
+      round(proportion * 100, 2), " % (", effectif, ")"
+    )),
+    vjust = -0.5,
+    size = 4
+  ) +
+  scale_y_continuous(
+    labels = label_percent(),
+    limits = c(0, 1.1)
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Valeurs présentes" = "steelblue",
+      "Valeurs manquantes ou vides" = "indianred"
+    )
+  ) +
+  labs(
+    title = "Répartition globale des valeurs présentes et manquantes ou vides",
+    x = NULL,
+    y = "Proportion des cellules"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5)
+  )
+```
+
+Au total, seules 0.41% des valeurs du jeu de données sont manquantes.
+
+### Valeurs uniques 
+
+```{r}
+# Nombre de valeurs distinctes par variable
+sapply(McDonald_s_Reviews, function(x) length(unique(x)))
+```
+
+```{r}
+# Graphique : proportion de valeurs distinctes par variable
+donnees_distinctes <- data.frame(
+  variable = names(McDonald_s_Reviews),
+  effectif = sapply(McDonald_s_Reviews, function(x) length(unique(x)))
+) %>%
+  mutate(pourcentage = effectif / nrow(McDonald_s_Reviews) * 100)
+
+ggplot(donnees_distinctes,
+       aes(x = reorder(variable, pourcentage), y = pourcentage)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = paste0(
+      round(pourcentage, 2), " % (", effectif, ")"
+    )),
+    hjust = -0.1,
+    size = 3.5
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.2))
+  ) +
+  labs(
+    title = "Proportion de valeurs distinctes par variable",
+    x = "Variable",
+    y = "Valeurs distinctes (%)"
+  ) +
+  theme_minimal()
+```
+
+Le pourcentage de valeurs distinctes varie fortement selon les variables. Les variables store_name et category présentent respectivement 2 et 1 valeurs distinctes, soit moins de 0,01 % des observations, ce qui est cohérent avec un jeu de données consacré aux restaurants McDonald's. On retrouve également 40 adresses de restaurants différentes (0,12 %), tandis que la variable rating possède 6 modalités (0,02 %). Enfin, la variable review contient 22 278 textes distincts, soit 66,71 % du nombre total d'observations. Cela indique que certains commentaires sont répétés dans le jeu de données et qu'il sera nécessaire d'examiner ces répétitions lors de la préparation des données.
+
+## Préparation des variables pour les graphiques
+
+```{r}
+# Création d'un jeu de données sans modifier l'original
+donnees_graph <- McDonald_s_Reviews %>%
+  mutate(
+    nb_mots = str_count(str_squish(coalesce(review, "")), "\\S+")
+  )
+```
+
+## Analyses univariées 
+
+```{r}
+# Répartition des notes (modalités originales)
+repartition_notes <- donnees_graph %>%
+  count(rating) %>%
+  mutate(pourcentage = n / sum(n) * 100)
+
+ggplot(repartition_notes,
+       aes(x = reorder(rating, -pourcentage), y = pourcentage)) +
+  geom_col(fill = "steelblue", width = 0.7) +
+  geom_text(
+    aes(label = paste0(round(pourcentage, 2), " % (", n, ")")),
+    vjust = -0.5,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Répartition des notes attribuées",
+    x = "Note",
+    y = "Proportion des avis (%)"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+La répartition des notes montre une forte présence des évaluations extrêmes. Les notes de 5 étoiles sont les plus fréquentes, avec 30,71 % des avis (10 257), suivies des notes de 1 étoile, qui représentent 28,17 % (9 409). À l'inverse, les notes de 2 étoiles sont les moins représentées, avec seulement 9,22 % (3 078). Les notes de 3 et 4 étoiles représentent respectivement 14,42 % et 17,33 % des avis. Cette distribution montre que les clients ont davantage tendance à laisser des évaluations très positives ou très négatives. Enfin, 50 observations (0,15 %) ne disposent pas de note renseignée.
+
+```{r}
+# Distribution du nombre de mots par avis
+ggplot(donnees_graph, aes(x = nb_mots)) +
+  geom_histogram(bins = 50, fill = "steelblue") +
+  labs(
+    title = "Distribution du nombre de mots par avis",
+    x = "Nombre de mots",
+    y = "Nombre d'avis"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+```
+
+La distribution du nombre de mots par avis est fortement asymétrique à droite. La majorité des commentaires sont relativement courts, avec une concentration importante autour des faibles nombres de mots. À l'inverse, les avis très longs sont beaucoup plus rares, même si certains dépassent les 200 mots. Cette différence de longueur pourra être intéressante à prendre en compte dans les futures analyses NLP, puisque les commentaires courts contiennent généralement moins d'informations textuelles que les commentaires détaillés.
+
+```{r}
+# Nombre d'avis par restaurant (15 plus représentés)
+donnees_graph %>%
+  count(store_address, sort = TRUE) %>%
+  slice_head(n = 15) %>%
+  mutate(
+    restaurant = str_remove(store_address, ", United States$"),
+    restaurant = str_trunc(restaurant, width = 55),
+    pourcentage = n / nrow(donnees_graph) * 100
+  ) %>%
+  ggplot(aes(x = reorder(restaurant, n), y = pourcentage)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = paste0(round(pourcentage, 2), " % (", n, ")")),
+    hjust = -0.1,
+    size = 3
+  ) +
+  coord_flip() +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.25))
+  ) +
+  labs(
+    title = "Les 15 restaurants ayant le plus d'avis",
+    x = "Restaurant",
+    y = "Proportion des avis (%)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.y = element_text(size = 9),
+    plot.margin = margin(15, 20, 15, 15)
+  )
+```
+
+Le nombre d'avis varie selon les restaurants présents dans le jeu de données. Parmi les 15 établissements les plus représentés, celui situé à Orlando, en Floride, arrive en première position avec 1 890 avis (5,66 % du total). Il est suivi de deux restaurants situés à Kissimmee et North Hollywood, avec respectivement 1 720 (5,15 %) et 1 710 avis (5,12 %). Le quinzième restaurant, situé à Austin, compte 926 avis (2,77 %). Ces différences montrent que certains établissements sont davantage représentés que d'autres dans le jeu de données, ce qui pourra être pris en compte lors des comparaisons entre restaurants.
+
+## Analyses bivariées
+
+```{r}
+# Longueur des avis selon la note
+ggplot(donnees_graph, aes(x = rating, y = nb_mots)) +
+  geom_boxplot(fill = "lightblue") +
+  coord_cartesian(ylim = c(0, 200)) +
+  labs(
+    title = "Longueur des avis selon la note",
+    x = "Note",
+    y = "Nombre de mots"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+
+```
+
+La longueur des avis varie selon la note attribuée. Les commentaires associés à une étoile présentent globalement les longueurs les plus importantes, avec une médiane d'environ 25 mots et une dispersion relativement élevée. Les avis de deux étoiles sont également assez longs, tandis que ceux de quatre et cinq étoiles sont généralement plus courts. On remarque également la présence de nombreuses valeurs extrêmes pour toutes les notes, correspondant à des commentaires particulièrement détaillés. Ces résultats suggèrent que les clients insatisfaits ont tendance à rédiger des avis plus longs pour expliquer leur mauvaise expérience.
+
+```{r}
+# Répartition des notes par restaurant
+# Pour les 15 restaurants ayant le plus d'avis
+top_restaurants <- donnees_graph %>%
+  count(store_address, sort = TRUE) %>%
+  slice_head(n = 15) %>%
+  pull(store_address)
+
+donnees_graph %>%
+  filter(store_address %in% top_restaurants) %>%
+  mutate(
+    restaurant = str_remove(store_address, ", United States$"),
+    restaurant = str_trunc(restaurant, width = 55)
+  ) %>%
+  ggplot(aes(x = restaurant, fill = rating)) +
+  geom_bar(position = "fill") +
+  coord_flip() +
+  scale_y_continuous(labels = label_percent()) +
+  labs(
+    title = "Répartition des notes par restaurant",
+    x = "Restaurant",
+    y = "Proportion des avis",
+    fill = "Note"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.y = element_text(size = 9)
+  )
+
+```
+
+La répartition des notes varie selon les 15 restaurants les plus représentés dans le jeu de données. Certains établissements, notamment ceux situés à Las Vegas et Orlando, présentent une proportion importante d'avis d'une étoile, tandis que d'autres, comme ceux de Voorhees Township ou de New York, semblent recevoir davantage d'évaluations positives. Malgré ces différences, les notes extrêmes restent bien représentées dans la plupart des restaurants. Ces résultats montrent que la satisfaction exprimée par les clients peut varier selon les établissements, ce qui pourrait être intéressant à approfondir dans la suite du projet.
+
+```{r}
+
+# Nombre de mots moyen selon la note
+donnees_graph %>%
+  group_by(rating) %>%
+  summarise(
+    moyenne_mots = mean(nb_mots),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = rating, y = moyenne_mots)) +
+  geom_col(fill = "steelblue") +
+  geom_text(
+    aes(label = round(moyenne_mots, 1)),
+    vjust = -0.5,
+    size = 3.5
+  ) +
+  scale_y_continuous(
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Nombre moyen de mots par avis selon la note",
+    x = "Note",
+    y = "Nombre moyen de mots"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+Le nombre moyen de mots par avis diminue globalement lorsque la note attribuée augmente. Les commentaires d'une étoile sont les plus longs, avec une moyenne de 37 mots, suivis de ceux de deux étoiles avec 28,5 mots. À l'inverse, les avis de cinq étoiles ne contiennent en moyenne que 12,6 mots, contre 15 mots pour les quatre étoiles et 17,5 mots pour les trois étoiles. Les observations sans note renseignée présentent une moyenne de 19,3 mots. Cette tendance confirme les résultats du graphique précédent : les avis négatifs sont généralement plus détaillés que les avis positifs, ce qui peut notamment s'expliquer par le besoin de décrire les problèmes rencontrés.
+
+```{r}
+# Évolution des notes selon l'ancienneté des avis
+
+donnees_temps <- McDonald_s_Reviews %>%
+  mutate(
+    nombre = case_when(
+      str_detect(review_time, "^a ") ~ 1,
+      TRUE ~ as.numeric(str_extract(review_time, "\\d+"))
+    ),
+    anciennete_jours = case_when(
+      str_detect(review_time, "hour") ~ nombre / 24,
+      str_detect(review_time, "day") ~ nombre,
+      str_detect(review_time, "week") ~ nombre * 7,
+      str_detect(review_time, "month") ~ nombre * 30.44,
+      str_detect(review_time, "year") ~ nombre * 365.25,
+      TRUE ~ NA_real_
+    ),
+    note = as.numeric(str_extract(rating, "^[1-5]")),
+    anciennete_annees = floor(anciennete_jours / 365.25)
+  )
+
+# Calcul de la note moyenne par période
+evolution_notes <- donnees_temps %>%
+  filter(!is.na(anciennete_annees), !is.na(note)) %>%
+  group_by(anciennete_annees) %>%
+  summarise(
+    note_moyenne = mean(note),
+    nb_avis = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(anciennete_annees))
+
+# Graphique : du plus ancien au plus récent
+ggplot(evolution_notes,
+       aes(x = reorder(paste0(anciennete_annees, " an(s)"),
+                       -anciennete_annees),
+           y = note_moyenne,
+           group = 1)) +
+  geom_line(color = "steelblue", linewidth = 1) +
+  geom_point(color = "steelblue", size = 2.5) +
+  geom_text(
+    aes(label = round(note_moyenne, 2)),
+    vjust = -0.8,
+    size = 3.5
+  ) +
+  scale_y_continuous(limits = c(1, 5)) +
+  labs(
+    title = "Évolution de la note moyenne selon l'ancienneté des avis",
+    x = "Ancienneté des avis (du plus ancien au plus récent)",
+    y = "Note moyenne"
+  ) +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+L'évolution de la note moyenne selon l'ancienneté des avis présente plusieurs fluctuations. Pour les avis les plus anciens, les moyennes varient fortement, allant de 2,15 à 4 étoiles entre 8 et 12 ans d'ancienneté. À partir de 7 ans, on observe une augmentation progressive de la note moyenne, qui passe de 2,52 à 3,31 étoiles pour les avis datant d'environ 3 ans. Sur les périodes plus récentes, les notes restent relativement stables, avec une légère diminution jusqu'à 3,03 étoiles pour les avis de moins d'un an. Ces résultats suggèrent une amélioration de la satisfaction exprimée au cours des années les plus anciennes, suivie d'une stabilisation autour de 3 étoiles. Il faut toutefois rester prudent dans l'interprétation, car les dates sont approximatives et le nombre d'avis par période n'est pas indiqué, ce qui peut notamment expliquer les fortes variations observées pour les années les plus anciennes.
