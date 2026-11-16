@@ -13,7 +13,7 @@ output:
 ## Import des données 
 
 ```{r}
-McDonald_s_Reviews <- read.csv("C:/Data/Loic/Mon Bureau/Master/M1/S1/Analyse_restitution/McDonald_s_Reviews.csv", comment.char="#")
+McDonald_s_Reviews <- read.csv("../src/data/McDonald_s_Reviews.csv, comment.char="#")
 
 ```
 
