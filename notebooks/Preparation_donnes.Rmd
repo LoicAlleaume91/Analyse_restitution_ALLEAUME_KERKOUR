@@ -1,0 +1,328 @@
+---
+title: "Préparation des données McDonald_s_Reviews"
+author: "Loïc ALLEAUME et Dina Kerkour"
+date: "2026-11-11"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+    toc_depth: 5
+    number_sections: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+\newpage
+
+# Introduction
+
+Dans cette partie, on prépare les commentaires pour la classification des sentiments.
+
+On va nettoyer les espaces, créer les trois classes de sentiments et repérer les commentaires identiques. Le but est aussi d'éviter qu'un même commentaire se retrouve plus tard dans les données d'entraînement et de test.
+
+# Chargement des librairies et des données
+
+```{r librairies}
+library(dplyr)
+library(stringr)
+library(knitr)
+```
+
+```{r import}
+# Le Rmd est dans notebooks/
+# Le fichier CSV est dans src/data/
+chemin_fichier <- "../src/data/McDonald_s_Reviews.csv"
+
+if (!file.exists(chemin_fichier)) {
+  stop(
+    "Fichier introuvable. Vérifier le chemin indiqué dans chemin_fichier : ",
+    chemin_fichier
+  )
+}
+
+donnees <- read.csv(
+  chemin_fichier,
+  stringsAsFactors = FALSE,
+  na.strings = c("", "NA"),
+  check.names = FALSE
+)
+
+stopifnot(all(c("review", "rating") %in% names(donnees)))
+
+dim(donnees)
+```
+
+Le dataset contient `r nrow(donnees)` lignes et `r ncol(donnees)` colonnes.
+
+# Nettoyage des commentaires
+
+Pour le moment, on fait un nettoyage simple. On enlève les espaces au début et à la fin des commentaires et on remplace les suites d'espaces ou les retours à la ligne par un seul espace.
+
+On garde aussi la colonne `review` originale et on crée une nouvelle colonne `review_clean`.
+
+```{r nettoyage}
+donnees_preparees <- donnees %>%
+  mutate(
+    review_clean = str_squish(coalesce(as.character(review), "")),
+    review_clean = na_if(review_clean, "")
+  )
+
+nb_textes_vides <- sum(is.na(donnees_preparees$review_clean))
+nb_textes_vides
+```
+
+Après ce nettoyage, les commentaires vides sont repérés comme des valeurs manquantes. On ne supprime pas encore les lignes du fichier préparé.
+
+# Création des sentiments
+
+La note est enregistrée sous forme de texte, par exemple `1 star` ou `5 stars`. On récupère donc le chiffre pour créer une nouvelle variable numérique.
+
+On utilise ensuite le regroupement prévu dans le README : 1 et 2 étoiles pour les avis négatifs, 3 étoiles pour les avis neutres et 4 et 5 étoiles pour les avis positifs.
+
+```{r sentiments}
+donnees_preparees <- donnees_preparees %>%
+  mutate(
+    rating_num = as.integer(
+      str_extract(as.character(rating), "\\d+")
+    ),
+    sentiment = case_when(
+      rating_num %in% c(1, 2) ~ "négatif",
+      rating_num == 3 ~ "neutre",
+      rating_num %in% c(4, 5) ~ "positif",
+      TRUE ~ NA_character_
+    )
+  )
+
+repartition_sentiments <- donnees_preparees %>%
+  count(sentiment, .drop = FALSE) %>%
+  mutate(
+    pourcentage = round(n / sum(n) * 100, 2)
+  )
+
+kable(
+  repartition_sentiments,
+  caption = "Répartition des sentiments"
+)
+```
+
+Les notes manquantes ou qui ne correspondent pas aux cinq notes prévues n'ont pas de sentiment attribué. On les garde dans le fichier préparé, mais elles ne pourront pas servir à l'apprentissage supervisé.
+
+# Repérage des commentaires identiques
+
+Deux commentaires peuvent être identiques même si les espaces ou les retours à la ligne sont différents. On utilise donc `review_clean` pour créer les groupes.
+
+Tous les commentaires nettoyés identiques auront le même `group_id`. Les commentaires vides n'auront pas de groupe.
+
+```{r group-id}
+textes_uniques <- unique(
+  donnees_preparees$review_clean[
+    !is.na(donnees_preparees$review_clean)
+  ]
+)
+
+donnees_preparees <- donnees_preparees %>%
+  mutate(
+    group_id = match(review_clean, textes_uniques)
+  )
+
+nb_textes_distincts <- length(textes_uniques)
+
+nb_groupes_repetes <- donnees_preparees %>%
+  filter(!is.na(group_id)) %>%
+  count(group_id) %>%
+  filter(n > 1) %>%
+  nrow()
+
+nb_textes_distincts
+nb_groupes_repetes
+```
+
+Le `group_id` dépend uniquement du texte nettoyé, pas du sentiment. On pourra ainsi repérer les mêmes commentaires même lorsque les notes associées sont différentes.
+
+# Vérification des sentiments dans chaque groupe
+
+On vérifie maintenant si les commentaires d'un même groupe ont tous le même sentiment.
+
+- **Cohérent :** un seul sentiment différent de `NA` dans le groupe.
+- **Contradictoire :** plusieurs sentiments différents dans le même groupe.
+- **Sans sentiment :** aucune ligne du groupe n'a de sentiment renseigné.
+
+```{r verification-groupes}
+groupes <- donnees_preparees %>%
+  filter(!is.na(group_id)) %>%
+  group_by(group_id) %>%
+  summarise(
+    nb_avis_groupe = n(),
+    nb_sentiments = n_distinct(
+      sentiment,
+      na.rm = TRUE
+    ),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    statut_groupe = case_when(
+      nb_sentiments == 0 ~ "sans sentiment",
+      nb_sentiments == 1 ~ "cohérent",
+      nb_sentiments > 1 ~ "contradictoire"
+    )
+  )
+
+donnees_preparees <- donnees_preparees %>%
+  left_join(
+    groupes %>%
+      select(
+        group_id,
+        nb_avis_groupe,
+        nb_sentiments,
+        statut_groupe
+      ),
+    by = "group_id"
+  ) %>%
+  mutate(
+    statut_groupe = case_when(
+      is.na(review_clean) ~ "sans texte",
+      is.na(statut_groupe) ~ "sans sentiment",
+      TRUE ~ statut_groupe
+    )
+  )
+
+bilan_groupes <- groupes %>%
+  count(statut_groupe, name = "nombre_groupes")
+
+kable(
+  bilan_groupes,
+  caption = "Vérification des groupes de commentaires"
+)
+```
+
+Les groupes cohérents peuvent être utilisés pour la classification. Les groupes contradictoires sont mis à part pour éviter d'associer plusieurs sentiments différents à un même texte.
+
+On garde cependant toutes les lignes dans le fichier préparé afin de conserver une trace des données originales et des cas à examiner.
+
+```{r exemples-contradictoires}
+exemples_contradictoires <- donnees_preparees %>%
+  filter(statut_groupe == "contradictoire") %>%
+  distinct(
+    group_id,
+    rating,
+    sentiment,
+    review_clean
+  ) %>%
+  mutate(
+    commentaire = str_trunc(
+      review_clean,
+      width = 120
+    )
+  ) %>%
+  select(
+    group_id,
+    rating,
+    sentiment,
+    commentaire
+  ) %>%
+  slice_head(n = 10)
+
+if (nrow(exemples_contradictoires) > 0) {
+  kable(
+    exemples_contradictoires,
+    caption = "Quelques exemples de groupes contradictoires"
+  )
+} else {
+  cat("Aucun groupe contradictoire n'a été trouvé.")
+}
+```
+
+# Création du jeu de données pour la classification
+
+Pour préparer les prochaines étapes, on crée un objet qui contient uniquement les commentaires non vides, avec un sentiment renseigné et un groupe cohérent.
+
+On ne fait pas encore le découpage entraînement/test ici. Il sera fait ensuite en utilisant `group_id`, pour garder toutes les lignes d'un même groupe dans le même ensemble.
+
+```{r donnees-classification}
+donnees_classification <- donnees_preparees %>%
+  filter(
+    !is.na(review_clean),
+    !is.na(sentiment),
+    statut_groupe == "cohérent"
+  )
+
+repartition_classification <- donnees_classification %>%
+  count(sentiment) %>%
+  mutate(
+    pourcentage = round(
+      n / sum(n) * 100,
+      2
+    )
+  )
+
+kable(
+  repartition_classification,
+  caption = "Sentiments dans le jeu destiné à la classification"
+)
+```
+
+# Bilan de la préparation
+
+```{r bilan}
+nb_groupes_contradictoires <- sum(
+  groupes$statut_groupe == "contradictoire"
+)
+
+nb_groupes_coherents <- sum(
+  groupes$statut_groupe == "cohérent"
+)
+
+bilan <- data.frame(
+  Etape = c(
+    "Nombre de lignes au départ",
+    "Commentaires vides après nettoyage",
+    "Textes distincts après nettoyage",
+    "Groupes de commentaires répétés",
+    "Groupes cohérents",
+    "Groupes contradictoires",
+    "Lignes retenues pour la classification"
+  ),
+  Effectif = c(
+    nrow(donnees),
+    nb_textes_vides,
+    nb_textes_distincts,
+    nb_groupes_repetes,
+    nb_groupes_coherents,
+    nb_groupes_contradictoires,
+    nrow(donnees_classification)
+  )
+)
+
+kable(
+  bilan,
+  caption = "Bilan de la préparation"
+)
+```
+
+Cette préparation permet d'avoir les sentiments et les groupes de commentaires identiques. Les groupes contradictoires sont identifiés et ne sont pas utilisés dans le jeu destiné à la classification.
+
+# Export du fichier préparé
+
+On exporte le dataset complet avec les nouvelles colonnes. Les lignes qui posent problème ne sont pas supprimées : elles restent identifiables grâce à `statut_groupe`.
+
+```{r export}
+# Le fichier de sortie est placé dans src/data/
+chemin_sortie <- "../src/data/McDonald_s_Reviews_prepared.csv"
+
+write.csv(
+  donnees_preparees,
+  chemin_sortie,
+  row.names = FALSE,
+  na = ""
+)
+
+chemin_sortie
+```
+
+Le fichier `McDonald_s_Reviews_prepared.csv` contient notamment `review_clean`, `rating_num`, `sentiment`, `group_id` et `statut_groupe`. Il servira de fichier commun pour la suite du projet.
