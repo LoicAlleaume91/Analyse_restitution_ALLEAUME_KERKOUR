@@ -291,7 +291,7 @@ Travaux engagés :
 - [x] Premières propositions de problématique et d'objectifs.
 - [x] Mise en place du suivi des tâches sur Jira.
 - [x] Début de l'exploration des données sous R Markdown.
-- [ ] Validation commune du README.
+- [x] Validation commune du README.
 - [ ] Confirmation du niveau du projet.
 - [ ] Première baseline TF-IDF.
 
