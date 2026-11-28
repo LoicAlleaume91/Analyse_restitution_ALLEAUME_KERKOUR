@@ -1,6 +1,6 @@
 ---
 title: "Exploration données McDonald_s_Reviews"
-author: "Loïc ALLEAUME et Dina Kerkour"
+author: "Loïc ALLEAUME et Dina KERKOUR"
 date: "2026-11-11"
 output:
   pdf_document:
