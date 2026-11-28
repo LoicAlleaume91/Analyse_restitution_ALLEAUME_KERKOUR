@@ -10,7 +10,7 @@ output:
     number_sections: false
 ---
 
-## Import des données 
+## Import des données
 
 ```{r}
 McDonald_s_Reviews <- read.csv("../src/data/McDonald_s_Reviews.csv", comment.char="#")
@@ -19,7 +19,7 @@ McDonald_s_Reviews <- read.csv("../src/data/McDonald_s_Reviews.csv", comment.cha
 
 Données importées à l'aide de l'option "Import Dataset" de R
 
-## Chargement des librairies 
+## Chargement des librairies
 
 ```{r, message=FALSE, warning=FALSE}
 library(ggplot2)
@@ -72,9 +72,9 @@ str(McDonald_s_Reviews)
 
 Le jeu de données contient une variable entière (reviewer_id), deux variables numériques (latitude. et longitude) et sept variables de type caractère. Certaines variables, notamment rating, rating_count et review_time, sont enregistrées sous forme de texte alors qu'elles représentent des informations numériques ou temporelles. Des conversions pourront donc être nécessaires pour les analyses suivantes.
 
-## Qualité des données 
+## Qualité des données
 
-### Valeurs manquantes 
+### Valeurs manquantes
 
 ```{r}
 # Nombre de valeurs manquantes ou vides par variable
@@ -173,7 +173,7 @@ ggplot(repartition_na, aes(x = statut, y = proportion, fill = statut)) +
 
 Au total, seules 0.41% des valeurs du jeu de données sont manquantes.
 
-### Valeurs uniques 
+### Valeurs uniques
 
 ```{r}
 # Nombre de valeurs distinctes par variable
@@ -222,7 +222,7 @@ donnees_graph <- McDonald_s_Reviews %>%
   )
 ```
 
-## Analyses univariées 
+## Analyses univariées
 
 ```{r}
 # Répartition des notes (modalités originales)

@@ -1,0 +1,629 @@
+---
+title: "Préparation des textes pour l’analyse des thèmes"
+author: "Loïc ALLEAUME et Dina KERKOUR"
+output:
+  pdf_document:
+    toc: true
+    latex_engine: xelatex
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, echo=TRUE, results="hide"}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = TRUE, comment = NA,
+                      fig.width = 7, fig.height = 3.0, fig.align = "center")
+```
+
+# Introduction
+
+L'objectif de cette partie est de préparer les commentaires des clients pour l'analyse des thèmes. Nous reprenons les données issues de la préparation commune afin de nous concentrer sur le contenu textuel des avis. Les transformations sont accompagnées de contrôles permettant d'étudier leurs effets sur les textes. La modélisation sera réalisée dans un autre document. L’enjeu est de réduire le bruit lexical sans supprimer les informations qui permettent de distinguer les sujets abordés. Les choix de préparation pourront influencer les thèmes obtenus par LDA ; ils doivent donc rester explicites.
+
+# Importation des données
+
+```{r installation, eval=FALSE, echo=TRUE}
+install.packages(c("dplyr", "stringr", "ggplot2", "knitr", "quanteda",
+                   "stopwords", "cld3", "cld2", "textstem", "reticulate", "hunspell"))
+```
+
+```{r import}
+library(dplyr)
+library(stringr)
+library(ggplot2)
+
+# Le fichier commun sert de point de départ pour éviter de refaire les
+# traitements de la classification des sentiments. Les identifiants permettent
+# de relier ensuite les thèmes aux autres résultats du projet.
+# Importation du fichier issu de la préparation commune
+chemin <- "../src/data/McDonald_s_Reviews_prepared.csv"
+if (!file.exists(chemin)) {
+  chemin <- "src/data/McDonald_s_Reviews_prepared.csv"
+}
+
+donnees <- read.csv(chemin, stringsAsFactors = FALSE,
+                    na.strings = c("", "NA"), check.names = FALSE,
+                    encoding = "UTF-8")
+stopifnot(all(c("reviewer_id", "review_clean") %in% names(donnees)))
+stopifnot(!anyNA(donnees$reviewer_id), !anyDuplicated(donnees$reviewer_id))
+dim(donnees)
+```
+
+# Vérification des commentaires
+
+Le nettoyage des espaces et l'identification des commentaires identiques ont déjà été réalisés lors de la préparation commune. Nous retirons les caractères de remplacement Unicode avant la détection des langues. Cette correction ne restaure pas les caractères perdus. Les textes sans lettre sont signalés comme non exploitables. Nous vérifions ensuite la présence de textes exploitables. Les commentaires identiques et les avis dont la note est manquante sont conservés : leur traitement éventuel dépendra des analyses suivantes.
+
+```{r controle}
+# Un caractère de remplacement indique une perte d’information : le mot
+# endommagé ne doit pas être interprété comme un mot valide par le futur LDA.
+# Nettoyer les chaînes invalides et les caractères de remplacement.
+nettoyer_encodage <- function(x) {
+  x <- iconv(coalesce(as.character(x), ""), from = "UTF-8", to = "UTF-8", sub = "\uFFFD")
+  x <- str_replace_all(x, fixed("\u00EF\u00BF\u00BD"), " ")
+  x <- str_replace_all(x, "[\\p{L}'’]*\uFFFD+(?:[\\p{L}'’]+\uFFFD+)*[\\p{L}'’]*", " ")
+  x <- str_replace_all(x, "[\uFFFD\\p{Cc}\\p{Cf}]", " ")
+  str_squish(x)
+}
+donnees_themes <- donnees %>%
+  mutate(texte_source = nettoyer_encodage(review_clean),
+         texte_present = str_detect(texte_source, "\\p{L}"))
+controle_encodage <- data.frame(
+  Indicateur = c("Textes modifiés par le nettoyage", "Textes sans lettre après correction",
+                 "Caractères de remplacement restants dans le texte de travail"),
+  Effectif = c(sum(donnees_themes$texte_source != coalesce(iconv(donnees$review_clean, from="UTF-8", to="UTF-8", sub="\uFFFD"), "")),
+               sum(!donnees_themes$texte_present),
+               sum(str_detect(donnees_themes$texte_source, fixed("\uFFFD")))))
+print(controle_encodage, row.names = FALSE)
+stopifnot(!any(str_detect(donnees_themes$texte_source, fixed("\uFFFD"))))
+
+controle_textes <- data.frame(
+  Indicateur = c("Nombre d'avis", "Textes non vides", "Textes vides",
+                 "Textes distincts non vides"),
+  Effectif = c(nrow(donnees_themes), sum(donnees_themes$texte_present),
+               sum(!donnees_themes$texte_present),
+               n_distinct(donnees_themes$texte_source[donnees_themes$texte_present]))
+)
+print(controle_textes, row.names = FALSE)
+
+# Indices des commentaires non vides
+indices <- which(donnees_themes$texte_present)
+textes <- donnees_themes$texte_source[indices]
+stopifnot(length(textes) > 0)
+```
+
+# Identification des langues
+
+Les traitements linguistiques dépendent de la langue des commentaires. Nous utilisons une détection automatique pour repérer les avis en anglais. Cette détection peut être imprécise pour les textes courts ou multilingues. Les avis sans version anglaise exploitable seront exclus du fichier thématique, mais conservés dans le fichier commun.
+
+```{r langues}
+# Une première estimation permet de mesurer la diversité linguistique.
+# Elle ne suffit pas à décider seule quels avis doivent être traduits.
+donnees_themes$langue <- NA_character_
+donnees_themes$langue[indices] <- cld3::detect_language(textes)
+
+repartition_langues <- donnees_themes %>%
+  filter(texte_present) %>%
+  mutate(langue = coalesce(langue, "Indéterminée")) %>%
+  count(langue, sort = TRUE) %>%
+  mutate(Proportion = round(100 * n / sum(n), 2))
+
+invisible(repartition_langues)
+
+ggplot(head(repartition_langues, 10),
+       aes(x = reorder(langue, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Les dix langues les plus représentées",
+       x = "Langue détectée", y = "Nombre d'avis") +
+  theme_minimal() +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+## Vérification de la détection
+
+Nous comparons CLD3 à CLD2, deux détecteurs automatiques. Leur accord ne constitue pas une preuve de la langue réelle. Les avis courts sont particulièrement difficiles à identifier. Un lexique anglais du domaine et un recours prudent aux votes anglais isolés permettent de récupérer certains avis courts ; ces décisions restent provisoires. Les codes sont normalisés avant comparaison. En cas de désaccord ou de détection manquante, un troisième détecteur, langid, fournit une estimation indépendante. Les décisions issues de cet arbitrage restent provisoires.
+
+```{r validation-langues}
+donnees_themes$langue_cld2 <- NA_character_
+donnees_themes$langue_cld2[indices] <- cld2::detect_language(textes, plain_text = TRUE)
+donnees_themes$nb_mots <- str_count(donnees_themes$texte_source, "\\S+")
+# Normalisation des codes (y compris les noms de langues éventuels).
+normaliser_langue <- function(x) {
+  x <- tolower(trimws(as.character(x)))
+  noms <- c(english="en", french="fr", spanish="es", german="de",
+            italian="it", portuguese="pt", dutch="nl", japanese="ja",
+            chinese="zh", russian="ru", arabic="ar", korean="ko",
+            "scottish gaelic"="gd", serbian="sr", frisian="fy",
+            catalan="ca", welsh="cy", vietnamese="vi", hindi="hi",
+            turkish="tr", polish="pl")
+  m <- match(x, names(noms))
+  x[!is.na(m)] <- unname(noms[m[!is.na(m)]])
+  x <- sub("[-_].*$", "", x)
+  x[is.na(x) | !grepl("^[a-z]{2,3}$", x) | x %in% c("un", "und", "unk")] <- NA_character_
+  x
+}
+donnees_themes$langue <- normaliser_langue(donnees_themes$langue)
+donnees_themes$langue_cld2 <- normaliser_langue(donnees_themes$langue_cld2)
+invisible(table(donnees_themes$langue, donnees_themes$langue_cld2, useNA = "ifany"))
+donnees_themes <- donnees_themes %>%
+  mutate(accord_langues = !is.na(langue) & !is.na(langue_cld2) & langue == langue_cld2,
+         langue_retenue = if_else(accord_langues, langue, NA_character_),
+         methode_langue = if_else(accord_langues, "Accord CLD2/CLD3", "Indéterminée"))
+
+# Environnement Python géré automatiquement par reticulate.
+# Aucun environnement virtuel nommé n'est nécessaire.
+if (utils::packageVersion("reticulate") < "1.41.0") {
+  stop("Mettre à jour reticulate : install.packages('reticulate'), puis redémarrer RStudio.")
+}
+if (!reticulate::py_available(initialize = FALSE)) {
+  Sys.setenv(RETICULATE_PYTHON = "managed")
+  reticulate::py_require(
+    packages = c("langid", "torch>=2.6", "transformers>=4.46,<5",
+                 "sentencepiece", "protobuf"),
+    python_version = ">=3.10,<3.13"
+  )
+}
+# L'initialisation installe les dépendances manquantes au premier lancement.
+tryCatch({
+  invisible(reticulate::py_config())
+  for (module in c("langid", "torch", "transformers", "sentencepiece")) {
+    if (!reticulate::py_module_available(module)) {
+      stop("Module Python indisponible : ", module)
+    }
+  }
+}, error = function(e) {
+  stop("Initialisation Python impossible. Redémarrer RStudio, vérifier la connexion Internet et relancer depuis le début. Détail : ", conditionMessage(e))
+})
+reticulate::py_run_string("import langid
+def identifier_langues(texts):
+    return [langid.classify(t)[0] for t in texts]")
+donnees_themes$langue_langid <- NA_character_
+# Un accord entre deux détecteurs peut rester erroné, notamment pour les
+# avis très courts. Le troisième vote limite les traductions inutiles.
+# Vérifier aussi les accords non anglais pour repérer les faux positifs.
+incertains <- which(donnees_themes$texte_present &
+  (!donnees_themes$accord_langues | coalesce(donnees_themes$langue_retenue != "en", TRUE)))
+if (length(incertains)) {
+  uniques <- unique(donnees_themes$texte_source[incertains])
+  estimations <- unlist(reticulate::py$identifier_langues(as.list(uniques)), use.names = FALSE)
+  donnees_themes$langue_langid[incertains] <- estimations[match(donnees_themes$texte_source[incertains], uniques)]
+  for (i in incertains) {
+    votes <- na.omit(c(donnees_themes$langue[i], donnees_themes$langue_cld2[i], donnees_themes$langue_langid[i]))
+    effectifs <- sort(table(votes), decreasing = TRUE)
+    if (length(effectifs) && effectifs[1] >= 2) {
+      donnees_themes$langue_retenue[i] <- names(effectifs)[1]
+      donnees_themes$methode_langue[i] <- "Majorité des détecteurs"
+    } else {
+      donnees_themes$langue_retenue[i] <- NA_character_
+      donnees_themes$methode_langue[i] <- "Désaccord"
+    }
+  }
+}
+# Le dictionnaire sert à reconnaître les avis anglais courts, pas à supprimer
+# systématiquement les mots inconnus (noms de produits, argot, fautes).
+dictionnaire <- hunspell::dictionary("en_US")
+mots_anglais <- c("wifi", "wi-fi", "thru", "mcdonalds", "mcflurry", "mcnuggets",
+                  "mcmuffin", "mcchicken", "mccafe", "bigmac")
+reconnaitre_court <- function(x) {
+  mots <- str_extract_all(str_to_lower(x), "[a-z]+(?:[-'][a-z]+)?")[[1]]
+  length(mots) >= 1 && length(mots) <= 5 &&
+    !str_detect(x, "[^\\x00-\\x7F]") &&
+    all(hunspell::hunspell_check(mots, dict = dictionnaire) | mots %in% mots_anglais)
+}
+stopifnot(reconnaitre_court("Excellent"), reconnaitre_court("Neutral"),
+          reconnaitre_court("free wifi"))
+idx_courts <- which(donnees_themes$texte_present & donnees_themes$nb_mots <= 5)
+idx_lexique <- idx_courts[vapply(donnees_themes$texte_source[idx_courts], reconnaitre_court, logical(1))]
+donnees_themes$langue_retenue[idx_lexique] <- "en"
+donnees_themes$methode_langue[idx_lexique] <- "Dictionnaire anglais - avis court"
+# Un vote anglais ou une absence de majorité étrangère suffit à retenir
+# l'anglais par hypothèse. Une traduction exige deux votes étrangers concordants
+# et aucun vote anglais.
+idx_doute <- which(donnees_themes$texte_present &
+  (is.na(donnees_themes$langue_retenue) |
+   coalesce(donnees_themes$langue == "en", FALSE) |
+   coalesce(donnees_themes$langue_cld2 == "en", FALSE) |
+   coalesce(donnees_themes$langue_langid == "en", FALSE)) &
+  coalesce(donnees_themes$langue_retenue != "en", TRUE))
+donnees_themes$langue_retenue[idx_doute] <- "en"
+donnees_themes$methode_langue[idx_doute] <- "Anglais par défaut"
+cat("Avis courts reconnus par le dictionnaire :", length(idx_lexique), "\n")
+cat("Avis supposés anglais en cas de doute :", length(idx_doute), "\n")
+invisible(table(donnees_themes$langue_retenue, useNA = "ifany"))
+print(table(donnees_themes$methode_langue))
+
+controle_langues <- donnees_themes %>% filter(texte_present) %>%
+  mutate(langue = coalesce(langue, "Indéterminée")) %>%
+  group_by(langue) %>% summarise(Effectif = n(),
+    Mediane_mots = median(nb_mots), Accord_pct = round(100 * mean(accord_langues), 2),
+    .groups = "drop") %>% arrange(desc(Effectif))
+print(as.data.frame(head(controle_langues, 5)), row.names = FALSE)
+
+set.seed(123)
+echantillon_langues <- donnees_themes %>% filter(texte_present) %>%
+  mutate(langue = coalesce(langue, "Indéterminée")) %>%
+  group_by(langue) %>% slice_sample(n = 5) %>% ungroup()
+
+```
+
+# Harmonisation linguistique
+
+Nous conservons les textes originaux. Les avis retenus en anglais sont repris sans traduction. Les décisions reposant uniquement sur langid sont signalées comme incertaines. En cas de désaccord sans majorité, nous supposons l'anglais. Cette hypothèse peut conserver certains avis étrangers. La traduction locale utilise NLLB-200 (modèle de recherche non commercial), sans transmettre les commentaires à un service de traduction distant. Le téléchargement initial du modèle nécessite Internet et plusieurs Go de stockage et de mémoire. Les traductions automatiques ne sont pas considérées comme validées.
+
+## Préparation des traductions
+
+Les dépendances Python sont déclarées et installées automatiquement lors de la vérification des langues, grâce à reticulate (version 1.41 ou supérieure). Il est conseillé de démarrer dans une session R neuve. La première exécution nécessite Internet et peut être longue. Tous les textes distincts dont la langue non anglaise est reconnue et prise en charge sont traduits automatiquement sur CPU. Les langues non prévues dans la correspondance restent à vérifier. Une langue non prise en charge ici signifie que son code ne figure pas dans notre table, pas nécessairement que le modèle ne la connaît pas.
+
+```{r harmonisation, results="hide", message=FALSE}
+
+# Harmoniser les langues évite de séparer artificiellement un même sujet
+# selon la langue utilisée. La traduction peut néanmoins modifier le vocabulaire.
+# Correspondance entre codes ISO et codes du modèle NLLB
+codes <- c(fr="fra_Latn", es="spa_Latn", gd="gla_Latn", nl="nld_Latn",
+           sr="srp_Cyrl", fy="fry_Latn", ca="cat_Latn", ja="jpn_Jpan",
+           cy="cym_Latn", de="deu_Latn", it="ita_Latn", pt="por_Latn",
+           ru="rus_Cyrl", ar="arb_Arab", ko="kor_Hang", vi="vie_Latn",
+           zh="zho_Hans", hi="hin_Deva", tr="tur_Latn", pl="pol_Latn", id="ind_Latn", ms="zsm_Latn",
+           tl="tgl_Latn", th="tha_Thai", uk="ukr_Cyrl", ro="ron_Latn",
+           sv="swe_Latn", da="dan_Latn", fi="fin_Latn", no="nob_Latn",
+           el="ell_Grek", he="heb_Hebr", cs="ces_Latn", hu="hun_Latn",
+           bn="ben_Beng", ta="tam_Taml", ur="urd_Arab", fa="pes_Arab",
+           sw="swh_Latn", bg="bul_Cyrl", hr="hrv_Latn", sk="slk_Latn")
+# Les codes à écriture ambiguë nécessitent un choix de script.
+# Choix du script chinois/serbe selon les caractères du texte, ci-dessous.
+codes <- c(codes, af="afr_Latn", eu="eus_Latn", gl="glg_Latn", et="est_Latn",
+           lv="lvs_Latn", lt="lit_Latn", sl="slv_Latn", bs="bos_Latn",
+           mk="mkd_Cyrl", sq="als_Latn", be="bel_Cyrl", eo="epo_Latn",
+           la="lat_Latn", is="isl_Latn", mt="mlt_Latn", ne="npi_Deva")
+donnees_themes$review_english <- NA_character_
+donnees_themes$traduit <- FALSE
+donnees_themes$statut_traduction <- ifelse(donnees_themes$texte_present,
+  "Langue à vérifier", "Texte absent")
+idx_en <- which(donnees_themes$langue_retenue == "en")
+donnees_themes$review_english[idx_en] <- donnees_themes$texte_source[idx_en]
+donnees_themes$statut_traduction[idx_en] <- ifelse(donnees_themes$methode_langue[idx_en] %in% c("Dictionnaire anglais - avis court", "Anglais par défaut"), "Anglais probable", "Anglais détecté")
+idx_tr <- which(donnees_themes$langue_retenue %in% names(codes))
+donnees_themes$statut_traduction[idx_tr] <- "En attente de traduction"
+idx_autres <- which(!is.na(donnees_themes$langue_retenue) & donnees_themes$langue_retenue != "en" & !donnees_themes$langue_retenue %in% names(codes))
+donnees_themes$statut_traduction[idx_autres] <- "Code non prévu dans la table"
+
+cat("Candidats à la traduction :", length(idx_tr), "\n")
+print(table(donnees_themes$statut_traduction))
+if (!length(idx_tr) && any(donnees_themes$texte_present & is.na(donnees_themes$review_english))) {
+  warning("Aucun candidat à la traduction : examiner les langues non résolues.")
+}
+if (length(idx_tr) > 0) {
+  tryCatch({
+  transformers <- reticulate::import("transformers", convert = FALSE)
+  modele <- "facebook/nllb-200-distilled-600M"
+  tokenizer <- transformers$AutoTokenizer$from_pretrained(modele, use_fast = FALSE)
+  model <- transformers$AutoModelForSeq2SeqLM$from_pretrained(modele)
+  invisible(model$eval())
+  torch <- reticulate::import("torch", convert = FALSE)
+  # Traduire chaque texte distinct une seule fois par langue.
+  invisible(torch$set_grad_enabled(FALSE))
+  for (lg in unique(donnees_themes$langue_retenue[idx_tr])) {
+    ids <- idx_tr[donnees_themes$langue_retenue[idx_tr] == lg]
+    originaux <- unique(donnees_themes$texte_source[ids])
+    ids <- ids[donnees_themes$texte_source[ids] %in% originaux]
+    cat("Traduction :", lg, "-", length(originaux), "textes distincts\n")
+    
+    traduire_un <- function(avis) {
+      tryCatch({
+        code_source <- unname(codes[lg])
+        tokenizer$src_lang <- code_source
+        entree <- tokenizer(avis, return_tensors = "pt", truncation = FALSE)
+        # Ne pas tronquer silencieusement les commentaires longs.
+        if (as.integer(reticulate::py_to_r(entree$input_ids$size(1L))) > 512) return(NA_character_)
+        sortie <- model$generate(input_ids = entree$input_ids,
+          attention_mask = entree$attention_mask,
+          forced_bos_token_id = tokenizer$convert_tokens_to_ids("eng_Latn"),
+          max_new_tokens = 512L)
+        if (as.integer(reticulate::py_to_r(sortie$size(1L))) >= 513) return(NA_character_)
+        as.character(unlist(reticulate::py_to_r(tokenizer$batch_decode(sortie, skip_special_tokens = TRUE))))[[1]]
+      }, error = function(e) { message(conditionMessage(e)); NA_character_ })
+    }
+    # Traduire les textes distincts évite de recalculer les avis identiques.
+    # La correspondance avec les lignes initiales est rétablie ensuite.
+    traductions <- vapply(originaux, traduire_un, character(1), USE.NAMES = FALSE)
+    echecs <- which(is.na(traductions))
+    if (length(echecs)) traductions[echecs] <- vapply(originaux[echecs], traduire_un, character(1), USE.NAMES = FALSE)
+    # Réessayer une fois les échecs techniques.
+    # Les textes trop longs restent signalés, sans troncature silencieuse.
+    traductions <- ifelse(is.na(traductions), NA_character_, nettoyer_encodage(traductions))
+    resultat <- traductions[match(donnees_themes$texte_source[ids], originaux)]
+    ok <- !is.na(resultat) & str_detect(coalesce(resultat, ""), "\\p{L}")
+    donnees_themes$review_english[ids[ok]] <- resultat[ok]
+    donnees_themes$traduit[ids[ok]] <- TRUE
+    donnees_themes$statut_traduction[ids] <- ifelse(ok,
+      "Traduction automatique à valider", "Traduction échouée ou texte long")
+  }
+  }, error = function(e) {
+    cat("Impossible de terminer la traduction :", conditionMessage(e), "\n")
+    stop("Traduction interrompue : vérifier les dépendances Python et relancer. ", conditionMessage(e))
+  })
+}
+print(as.data.frame(count(donnees_themes, statut_traduction)), row.names = FALSE)
+if (length(idx_tr) && !any(donnees_themes$traduit)) stop("Toutes les traductions ont échoué. Consulter les erreurs affichées ci-dessus.")
+```
+
+## Contrôle des traductions
+
+Nous distinguons les contrôles techniques (langue de sortie, nombres, texte inchangé) de la fidélité du sens. Ces indicateurs signalent des anomalies possibles, mais ne constituent pas une mesure de qualité sémantique. Les résultats automatiques restent provisoires.
+
+```{r controle-traductions}
+bilan_traduction <- donnees_themes %>% count(statut_traduction, name = "Effectif") %>%
+  mutate(Pourcentage = round(100 * Effectif / nrow(donnees_themes), 2))
+print(as.data.frame(bilan_traduction), row.names = FALSE)
+
+ggplot(bilan_traduction, aes(reorder(statut_traduction, Effectif), Effectif)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(title = "Bilan de l'harmonisation linguistique", x = NULL, y = "Nombre d'avis") +
+  theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+
+donnees_themes$langue_traduction <- NA_character_
+donnees_themes$controle_technique <- NA_character_
+idx_t <- which(donnees_themes$traduit)
+cat("Avis candidats à la traduction :", length(idx_tr), "\n")
+cat("Avis effectivement traduits :", length(idx_t), "\n")
+if (length(idx_t) == 0) {
+  cat("Aucune traduction disponible : aucune qualité de traduction ne peut être évaluée.\n")
+  if (length(idx_tr) == 0) cat("Aucune langue candidate reconnue et prise en charge.\n")
+} else {
+  originaux <- donnees_themes$texte_source[idx_t]
+  traductions <- donnees_themes$review_english[idx_t]
+  donnees_themes$langue_traduction[idx_t] <- cld3::detect_language(traductions)
+  # Comparaison des nombres écrits en chiffres (indicateur approximatif).
+  nombres <- function(x) lapply(str_extract_all(x, "[0-9]+"), sort)
+  nombres_ok <- mapply(identical, nombres(originaux), nombres(traductions))
+  langue_ok <- coalesce(donnees_themes$langue_traduction[idx_t] == "en", FALSE)
+  change <- str_to_lower(str_squish(originaux)) != str_to_lower(str_squish(traductions))
+  donnees_themes$controle_technique[idx_t] <- ifelse(langue_ok & nombres_ok & change,
+    "Aucune anomalie détectée", "À vérifier")
+  controle <- data.frame(Indicateur = c("Sortie détectée en anglais", "Nombres identiques",
+    "Texte modifié", "Aucune anomalie détectée"),
+    Effectif = c(sum(langue_ok), sum(nombres_ok), sum(change),
+      sum(langue_ok & nombres_ok & change)))
+  controle$Pourcentage <- round(100 * controle$Effectif / length(idx_t), 2)
+  print(controle, row.names = FALSE)
+}
+```
+
+### Validation manuelle des traductions
+
+Nous sélectionnons jusqu'à trois textes distincts traduits au total et affichons les originaux et leurs traductions directement dans le document. Les extraits affichés sont limités à 220 caractères par texte pour alléger le PDF ; les textes complets restent dans les objets R. Une personne connaissant la langue source peut vérifier la fidélité du sens, des négations, des produits et des quantités. Aucun fichier de contrôle supplémentaire n'est nécessaire.
+
+```{r validation-manuelle}
+if (length(idx_t) > 0) {
+  set.seed(123)
+  exemples_traductions <- donnees_themes %>% filter(traduit) %>%
+    distinct(langue_retenue, texte_source, review_english, .keep_all = TRUE) %>%
+    slice_sample(n = 3) %>%
+    select(reviewer_id, langue_retenue, texte_source, review_english, controle_technique)
+  for (i in seq_len(nrow(exemples_traductions))) {
+    cat("Avis :", exemples_traductions$reviewer_id[i],
+        "\nLangue :", exemples_traductions$langue_retenue[i],
+        "\nOriginal :", str_trunc(exemples_traductions$texte_source[i], 220),
+        "\nTraduction :", str_trunc(exemples_traductions$review_english[i], 220),
+        "\nContrôle :", exemples_traductions$controle_technique[i], "\n\n")
+  }
+  cat("Exemples affichés :", nrow(exemples_traductions), "\n")
+} else cat("Validation manuelle impossible : aucune traduction disponible.\n")
+
+# Les traductions restent provisoires ; les anomalies techniques sont signalées.
+donnees_themes$anglais_disponible <- !is.na(donnees_themes$review_english)
+# Contrôle de la part non harmonisée, rapportée à tous les avis initiaux.
+non_harmonises <- donnees_themes$texte_present & !donnees_themes$anglais_disponible
+part_non_harmonisee <- 100 * sum(non_harmonises) / nrow(donnees_themes)
+cat("Avis non harmonisés :", sum(non_harmonises), "sur", nrow(donnees_themes),
+    "-", round(part_non_harmonisee, 2), "% (seuil : 1 %)\n")
+if (any(non_harmonises)) {
+  a_verifier <- donnees_themes[non_harmonises, c("reviewer_id", "texte_source", "langue_retenue", "statut_traduction")]
+  write.csv(a_verifier, file.path(dirname(chemin), "Avis_non_harmonises.csv"),
+            row.names = FALSE, fileEncoding = "UTF-8")
+  cat("Les avis concernés sont disponibles dans Avis_non_harmonises.csv.\n")
+}
+if (part_non_harmonisee > 1) warning("Plus de 1 % des avis ne sont pas harmonisés : export final bloqué.")
+indices <- which(donnees_themes$anglais_disponible)
+textes <- donnees_themes$review_english[indices]
+if (!length(textes)) stop("Aucun texte anglais exploitable : vérifier le bilan linguistique.")
+```
+
+# Nettoyage et tokenisation
+
+Nous uniformisons la casse et les apostrophes, puis séparons les textes en mots. Les URL, la ponctuation et les symboles isolés sont retirés. Les nombres sont conservés car ils peuvent renseigner sur les prix, les quantités ou les temps d'attente. Les contractions négatives anglaises sont développées afin de préserver les négations.
+
+```{r tokenisation, echo=TRUE}
+textes <- str_to_lower(textes)
+textes <- str_replace_all(textes, "’", "'")
+anglais <- seq_along(textes)
+textes[anglais] <- str_replace_all(textes[anglais], "\\bcan't\\b", "can not")
+textes[anglais] <- str_replace_all(textes[anglais], "\\bwon't\\b", "will not")
+textes[anglais] <- str_replace_all(textes[anglais], "n't\\b", " not")
+names(textes) <- as.character(donnees_themes$reviewer_id[indices])
+
+# Les jetons serviront à compter les occurrences lors de la modélisation.
+# Les nombres sont conservés pour ne pas perdre les durées et quantités.
+jetons_initiaux <- quanteda::tokens(textes,
+  remove_punct = TRUE, remove_symbols = TRUE,
+  remove_url = TRUE, remove_numbers = FALSE)
+```
+
+## Mots les plus fréquents avant suppression des stop words
+
+```{r frequences-initiales}
+# Comptage des occurrences dans l'ensemble des commentaires
+frequences_initiales <- as.data.frame(table(unlist(as.list(jetons_initiaux),
+                                                    use.names = FALSE)))
+names(frequences_initiales) <- c("Mot", "Effectif")
+frequences_initiales <- frequences_initiales %>% arrange(desc(Effectif))
+
+ggplot(head(frequences_initiales, 20), aes(x = reorder(Mot, Effectif), y = Effectif)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(title = "Les vingt mots les plus fréquents avant filtrage",
+       x = "Mot", y = "Nombre d'occurrences") +
+  theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+# Suppression des stop words
+
+Les mots outils tels que *the*, *and* ou *of* sont généralement peu utiles pour distinguer les sujets abordés. Nous utilisons une liste anglaise sur les textes harmonisés disponibles. Les négations et certains mots contextuels comme down et always sont conservés. Les fragments manifestement incomplets sont retirés ; les mots inconnus du dictionnaire ne sont pas supprimés automatiquement. Les avis sans version anglaise disponible restent dans le fichier commun, mais pas dans la sortie thématique.
+
+```{r stop-words}
+# Les mots très courants peuvent dominer les fréquences sans distinguer
+# les thèmes. Les exceptions protègent notamment les négations.
+mots_vides <- setdiff(stopwords::stopwords("en"),
+                     c("no", "not", "nor", "never", "without", "down", "always"))
+jetons_sans_stopwords <- as.list(jetons_initiaux)
+jetons_sans_stopwords[anglais] <- lapply(jetons_sans_stopwords[anglais],
+  function(mots) mots[!mots %in% mots_vides])
+
+# Retirer les fragments de contractions manifestement incomplets.
+fragments <- c("doesn", "don", "didn", "isn", "aren", "wasn", "weren",
+               "couldn", "wouldn", "shouldn", "hasn", "haven", "hadn")
+jetons_sans_stopwords <- lapply(jetons_sans_stopwords,
+  function(mots) mots[!mots %in% fragments])
+
+frequences_filtrees <- as.data.frame(table(unlist(jetons_sans_stopwords,
+                                                   use.names = FALSE)))
+names(frequences_filtrees) <- c("Mot", "Effectif")
+frequences_filtrees <- frequences_filtrees %>% arrange(desc(Effectif))
+
+ggplot(head(frequences_filtrees, 20), aes(x = reorder(Mot, Effectif), y = Effectif)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(title = "Les vingt mots les plus fréquents après filtrage",
+       x = "Mot", y = "Nombre d'occurrences") +
+  theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+# Lemmatisation
+
+La lemmatisation permet de regrouper certaines formes d'un même mot (par exemple *burgers* et *burger*). Nous appliquons un dictionnaire anglais aux textes harmonisés disponibles. Cette méthode ne tient pas compte de tout le contexte grammatical : la version sans lemmatisation reste disponible dans les objets intermédiaires du Rmd.
+
+```{r lemmatisation}
+jetons_finaux <- jetons_sans_stopwords
+# Lemmatiser chaque mot distinct une seule fois réduit les calculs.
+# Le rapprochement des formes réduit la dispersion du vocabulaire.
+vocabulaire <- unique(unlist(jetons_sans_stopwords[anglais], use.names = FALSE))
+
+if (length(vocabulaire) > 0) {
+  lemmes <- textstem::lemmatize_words(vocabulaire)
+  jetons_finaux[anglais] <- lapply(jetons_sans_stopwords[anglais], function(mots) {
+    resultat <- lemmes[match(mots, vocabulaire)]
+    resultat[mots %in% c("down", "always", "not", "no", "never")] <- mots[mots %in% c("down", "always", "not", "no", "never")]
+    resultat[!is.na(resultat) & !resultat %in% mots_vides & nzchar(resultat)]
+  })
+  changements <- data.frame(Mot = vocabulaire, Lemme = lemmes) %>%
+    filter(Mot != Lemme)
+  print(head(changements, 5), row.names = FALSE)
+}
+```
+
+# Vérification des transformations
+
+Nous comparons les longueurs des textes aux différentes étapes, ainsi que les tailles du vocabulaire. Une diminution du nombre de mots ne garantit pas une meilleure préparation : il faut également examiner les commentaires transformés.
+
+```{r bilan-longueurs}
+# Comparer les étapes permet de quantifier la perte de contenu et de
+# repérer les avis devenus vides, sans assimiler réduction et qualité.
+longueurs <- data.frame(
+  Etape = c("Tokenisation", "Sans stop words", "Lemmatisation"),
+  Mots = c(sum(lengths(as.list(jetons_initiaux))),
+           sum(lengths(jetons_sans_stopwords)), sum(lengths(jetons_finaux))),
+  Vocabulaire = c(length(unique(unlist(as.list(jetons_initiaux)))),
+                  length(unique(unlist(jetons_sans_stopwords))),
+                  length(unique(unlist(jetons_finaux)))),
+  Moyenne = round(c(mean(lengths(as.list(jetons_initiaux))),
+                    mean(lengths(jetons_sans_stopwords)),
+                    mean(lengths(jetons_finaux))), 2),
+  Textes_vides = c(sum(lengths(as.list(jetons_initiaux)) == 0),
+                   sum(lengths(jetons_sans_stopwords) == 0),
+                   sum(lengths(jetons_finaux) == 0)))
+print(longueurs, row.names = FALSE)
+```
+
+```{r textes-prepares}
+# Conservation de toutes les lignes et des variables de la préparation commune
+# Les textes absents restent NA ; les textes devenus vides sont signalés.
+donnees_themes$review_tokens <- NA_character_
+donnees_themes$review_sans_stopwords <- NA_character_
+donnees_themes$review_theme <- NA_character_
+donnees_themes$review_tokens[indices] <- vapply(as.list(jetons_initiaux), paste,
+                                               character(1), collapse = " ")
+donnees_themes$review_sans_stopwords[indices] <- vapply(jetons_sans_stopwords, paste,
+                                                       character(1), collapse = " ")
+donnees_themes$review_theme[indices] <- vapply(jetons_finaux, paste,
+                                               character(1), collapse = " ")
+donnees_themes$texte_exploitable <- !is.na(donnees_themes$review_theme) &
+  nzchar(coalesce(donnees_themes$review_theme, ""))
+
+# Exemples reproductibles de commentaires avant et après préparation
+set.seed(123)
+exemples <- donnees_themes %>% filter(anglais_disponible) %>%
+  select(reviewer_id, langue, review_clean, review_english, review_theme)
+exemples <- exemples[sample.int(nrow(exemples), min(2, nrow(exemples))), ]
+# Affichage de courts extraits ; les textes complets restent disponibles dans exemples.
+for (i in seq_len(nrow(exemples))) {
+  cat("Avis :", exemples$reviewer_id[i], "\n")
+  cat("Langue :", exemples$langue[i], "\n")
+  cat("Avant :", str_trunc(nettoyer_encodage(exemples$review_clean[i]), 220), "\n")
+  cat("Anglais :", str_trunc(exemples$review_english[i], 220), "\n")
+  cat("Après :", str_trunc(exemples$review_theme[i], 220), "\n\n")
+}
+```
+
+```{r frequences-finales}
+frequences_finales <- as.data.frame(table(unlist(jetons_finaux, use.names = FALSE)))
+names(frequences_finales) <- c("Mot", "Effectif")
+frequences_finales <- frequences_finales %>% arrange(desc(Effectif))
+
+ggplot(head(frequences_finales, 20), aes(x = reorder(Mot, Effectif), y = Effectif)) +
+  geom_col(fill = "steelblue") + coord_flip() +
+  labs(title = "Les vingt mots les plus fréquents après lemmatisation",
+       x = "Mot", y = "Nombre d'occurrences") +
+  theme_minimal() + theme(plot.title = element_text(hjust = 0.5))
+```
+
+# Bilan et exportation
+
+```{r bilan}
+bilan <- data.frame(
+  Indicateur = c("Avis conservés", "Avis sans contenu après correction",
+                 "Avis sans version anglaise disponible (texte présent)",
+                 "Avis devenus vides après préparation", "Avis exploitables"),
+  Effectif = c(nrow(donnees_themes), sum(!donnees_themes$texte_present),
+               sum(donnees_themes$texte_present & !donnees_themes$anglais_disponible),
+               sum(donnees_themes$anglais_disponible & !donnees_themes$texte_exploitable),
+               sum(donnees_themes$texte_exploitable)))
+
+bilan$Pourcentage <- round(100 * bilan$Effectif / nrow(donnees_themes), 2)
+print(bilan, row.names = FALSE)
+```
+
+Le fichier de sortie contient uniquement les identifiants, les métadonnées utiles aux analyses et les textes préparés. Les commentaires originaux et les diagnostics restent disponibles dans le fichier commun et dans les objets R. Les langues incertaines sont supposées anglaises. Seuls les textes exploitables sont exportés. La sélection des documents et la matrice documents-termes seront étudiées lors de la modélisation.
+
+```{r export}
+if (part_non_harmonisee > 1) stop("Export bloqué : plus de 1 % des avis restent non harmonisés. Examiner Avis_non_harmonises.csv.")
+stopifnot(nrow(donnees_themes) == nrow(donnees),
+          identical(donnees_themes$reviewer_id, donnees$reviewer_id))
+# Les métadonnées permettent de croiser les thèmes avec les notes, les
+# restaurants et les périodes sans réintroduire les diagnostics techniques.
+# Liste fermée : aucune colonne intermédiaire ne peut être exportée par accident.
+colonnes_utiles <- c("reviewer_id", "store_address", "latitude.", "longitude",
+                     "review_time", "rating", "rating_num", "sentiment", "group_id")
+donnees_sortie <- donnees %>% select(any_of(colonnes_utiles)) %>% mutate(
+  langue = donnees_themes$langue_retenue,
+  review_english = donnees_themes$review_english,
+  traduit = donnees_themes$traduit,
+  review_theme = donnees_themes$review_theme,
+  texte_exploitable = donnees_themes$texte_exploitable
+) %>% filter(texte_exploitable) %>% select(-texte_exploitable)
+stopifnot(nrow(donnees_sortie) == sum(donnees_themes$texte_exploitable),
+          identical(donnees_sortie$reviewer_id, donnees$reviewer_id[donnees_themes$texte_exploitable]),
+          !any(str_detect(coalesce(donnees_sortie$review_english, ""), fixed("\uFFFD"))),
+          !any(str_detect(coalesce(donnees_sortie$review_theme, ""), fixed("\uFFFD"))))
+chemin_sortie <- file.path(dirname(chemin), "McDonald_s_Reviews_themes.csv")
+write.csv(donnees_sortie, chemin_sortie, row.names = FALSE, na = "", fileEncoding = "UTF-8")
+cat("Fichier exporté :", normalizePath(chemin_sortie), "\n")
+cat("Dimensions :", nrow(donnees_sortie), "lignes et", ncol(donnees_sortie), "colonnes\n")
+invisible(names(donnees_sortie))
+```
